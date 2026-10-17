@@ -1,0 +1,342 @@
+[200~*** Begin Patch
+*** Add File: .github/workflows/lineups.yml
++name: Refresh lineups cache
++
++on:
++  schedule:
++    - cron: '*/15 * * * *'    # toutes les 15 minutes : job léger pour rafraîchir les compos
++  workflow_dispatch:
++
++jobs:
++  lineups:
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Set up Python
++        uses: actions/setup-python@v4
++        with:
++          python-version: '3.11'
++
++      - name: Install minimal dependencies
++        run: pip install requests pyyaml
++
++      - name: Fetch lineups (light)
++        env:
++          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
++        run: |
++          python scripts/fetch_lineups.py
++
+*** End Patch
+*** Begin Patch
+*** Add File: .github/workflows/build.yml
++name: Build and publish docs (full)
++
++on:
++  push:
++    branches: [ main ]
++  schedule:
++    - cron: '0 * * * *'    # toutes les heures : génération complète et publication
++  workflow_dispatch:
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++        with:
++          persist-credentials: true
++
++      - name: Set up Python
++        uses: actions/setup-python@v4
++        with:
++          python-version: '3.11'
++
++      - name: Install dependencies
++        run: pip install -r requirements.txt
++
++      - name: Run Foot Bot (full)
++        env:
++          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
++          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
++          OPENWEATHER_KEY: ${{ secrets.OPENWEATHER_KEY }}
++        run: python main.py
++
++      - name: Commit generated docs
++        run: |
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          git add docs
++          git commit -m "ci: update docs (site build)" || echo "no changes to commit"
++          git push
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++
+*** End Patch
+*** Begin Patch
+*** Add File: scripts/fetch_lineups.py
++#!/usr/bin/env python3
++"""Script léger : parcourt les fixtures à venir et force l'actualisation des compos (API-Football).
++Utilisé par le workflow 'lineups' toutes les 15 minutes pour ne pas lancer une génération complète.
++"""
++import os
++import sys
++from datetime import datetime, timedelta, timezone
++from zoneinfo import ZoneInfo
++import yaml
++
++import sources as S
++
++def main():
++    cfg = yaml.safe_load(open("config.yaml", encoding="utf-8"))
++    fk = os.getenv("API_FOOTBALL_KEY") or cfg["api_football_key"]
++    if fk.startswith("TA_"):
++        print("API_FOOTBALL_KEY manquante — abort.")
++        sys.exit(0)
++
++    api = S.ApiFootball(fk)
++    now = datetime.now(timezone.utc)
++    season = now.year if now.month >= 7 else now.year - 1
++    d1, d2 = now.date().isoformat(), (now.date() + timedelta(days=cfg["days_ahead"])).isoformat()
++    ttl = cfg["ttl_h"]
++    tz = ZoneInfo(cfg["timezone"])
++    total = 0
++    updated = 0
++
++    for lg in cfg["leagues"]:
++        print(f"== Refresh lineups for {lg['name']}")
++        fx = api.fixtures(lg["api_id"], season, d1, d2, ttl["fixtures"])
++        if not fx:
++            continue
++        for f in fx:
++            ko = datetime.fromisoformat(f["date"].replace("Z", "+00:00"))
++            mins = (ko - now).total_seconds() / 60
++            # On rafraîchit les compos si on est dans la fenêtre H-75 -> H+15
++            if -15 <= mins <= cfg["lineup_window_min"]:
++                total += 1
++                # ApiFootball.lineups utilise le cache interne (sources.cached) et l'écrira si périmé.
++                try:
++                    lu = api.lineups(f["id"])
++                    if lu:
++                        updated += 1
++                except Exception as e:
++                    print(f"[!] erreur lineups {f['id']}: {e}")
++
++    print(f"Finished: checked {total} fixtures, refreshed {updated} lineups.")
++
++if __name__ == "__main__":
++    main()
++
+*** End Patch
+*** Begin Patch
+*** Update File: config.yaml
+@@
+-api_football_key: "TA_CLE_API_FOOTBALL"   # https://dashboard.api-football.com
+-odds_api_key: "TA_CLE_ODDS_API"           # https://the-odds-api.com (cotes Winamax FR)
+-
+-timezone: Europe/Paris
+-days_ahead: 3              # matchs affichés sur les N prochains jours
+-lineup_window_min: 75      # on cherche les compos officielles à partir de H-75 min
+-injuries_horizon_h: 36     # absents récupérés pour les matchs dans les 36 h
+-odds_markets: "h2h,totals" # retire ",totals" pour économiser des crédits
+-
+-# Durée de validité du cache (heures) = contrôle de ton quota d'API
+-ttl_h: {fixtures: 6, results: 12, injuries: 6, odds: 12, news: 6}
++api_football_key: "TA_CLE_API_FOOTBALL"   # https://dashboard.api-football.com
++odds_api_key: "TA_CLE_ODDS_API"           # https://the-odds-api.com (cotes Winamax FR)
++
++timezone: Europe/Paris
++days_ahead: 3              # matchs affichés sur les N prochains jours
++lineup_window_min: 75      # on cherche les compos officielles à partir de H-75 min
++injuries_horizon_h: 36     # absents récupérés pour les matchs dans les 36 h
++odds_markets: "h2h,totals" # retire ",totals" pour économiser des crédits
++
++# Durée de validité du cache (heures) = contrôle de ton quota d'API
++ttl_h: {fixtures: 6, results: 12, injuries: 6, odds: 12, news: 6, weather: 3}
+*** End Patch
+*** Begin Patch
+*** Update File: main.py
+@@
+-    # Pré-chargement / optimisation des cotes :
+-    # Si toutes les ligues ont un cache frais, on lira les caches plutôt que de lancer des requêtes.
+-    events_cache = {}
+-    if use_odds:
+-        all_fresh = True
+-        for lg in cfg["leagues"]:
+-            key = f"odds:{lg['odds_key']}"
+-            if not S.cache_fresh(key, ttl["odds"]):
+-                all_fresh = False
+-                break
+-        if all_fresh:
+-            for lg in cfg["leagues"]:
+-                key = f"odds:{lg['odds_key']}"
+-                events_cache[lg["odds_key"]] = S.read_cache(key) or []
+-            print("[i] Tous les caches odds sont frais — utilisation directe des caches sans appels réseau.")
++    # Pré-chargement / optimisation des cotes :
++    # Si toutes les ligues ont un cache frais, on lira les caches plutôt que de lancer des requêtes.
++    events_cache = {}
++    if use_odds:
++        all_fresh = True
++        for lg in cfg["leagues"]:
++            key = f"odds:{lg['odds_key']}"
++            if not S.cache_fresh(key, ttl["odds"]):
++                all_fresh = False
++                break
++        if all_fresh:
++            for lg in cfg["leagues"]:
++                key = f"odds:{lg['odds_key']}"
++                events_cache[lg["odds_key"]] = S.read_cache(key) or []
++            print("[i] Tous les caches odds sont frais — utilisation directe des caches sans appels réseau.")
+@@
+-            # H2H (dernières confrontations)
+-            h2 = M.h2h(results, f["home"], f["away"], n=6)
+-
+-            # météo (OneCall 3 jours) — match_date passé en local.date()
+-            weather = S.fetch_weather(f.get("city"), ow, ttl.get("weather", 3), match_date=local.date()) if use_weather and f.get("city") else None
++            # H2H (dernières confrontations)
++            h2 = M.h2h(results, f["home"], f["away"], n=6)
++
++            # météo (OneCall) : on récupère 3 jours (liste) si disponible
++            weather = S.fetch_weather(f.get("city"), ow, ttl.get("weather", 3), days=3) if use_weather and f.get("city") else None
+*** End Patch
+*** Begin Patch
+*** Update File: model.py
+@@
+ def form_factor(tb, team):
+     x = tb.get(team)
+     if not x or x["p"] < 5:
+         return 1.0
+     pts = lambda f: sum(3 if c == "W" else 1 if c == "D" else 0 for c in f)
+     d = pts(x["form"][-5:]) / 5 - x["pts"] / x["p"]
+     return 1 + 0.04 * max(-1, min(1, d))
+ 
++
++# ---------- H2H (confrontations directes) ----------
++def h2h(results, home, away, n=6):
++    """Retourne les n dernières confrontations entre home et away tirées des résultats.
++    Format: {'matches': [...], 'summary': {...}}"""
++    relevant = [r for r in results if (r["home"] == home and r["away"] == away) or (r["home"] == away and r["away"] == home)]
++    relevant.sort(key=lambda r: parse_dt(r["date"]), reverse=True)
++    last = relevant[:n]
++    # résumé simple
++    h_w = a_w = d = 0
++    gh = ga = 0
++    for r in last:
++        gh += r["hg"]; ga += r["ag"]
++        if r["hg"] > r["ag"]:
++            if r["home"] == home:
++                h_w += 1
++            else:
++                a_w += 1
++        elif r["hg"] < r["ag"]:
++            if r["away"] == home:
++                h_w += 1
++            else:
++                a_w += 1
++        else:
++            d += 1
++    cnt = len(last) or 1
++    summary = {"played": len(last), "home_w": h_w, "away_w": a_w, "draws": d,
++               "avg_home_goals": round(gh/cnt, 2), "avg_away_goals": round(ga/cnt, 2)}
++    return {"matches": last, "summary": summary}
++
+*** End Patch
+*** Begin Patch
+*** Update File: sources.py
+@@
+ import feedparser
+ import requests
+ from datetime import datetime, timezone
+@@
+ def cached(key, ttl_h, fn):
+@@
+     return data
++
++
++def cache_fresh(key, ttl_h):
++    """Vérifie si le cache pour `key` existe et est encore valide."""
++    path = os.path.join(CACHE_DIR, hashlib.md5(key.encode()).hexdigest() + ".json")
++    return os.path.exists(path) and (time.time() - os.path.getmtime(path) < ttl_h * 3600)
++
++
++def read_cache(key):
++    """Lit le cache brut sans appeler l'API (peut renvoyer None si absent)."""
++    path = os.path.join(CACHE_DIR, hashlib.md5(key.encode()).hexdigest() + ".json")
++    return _read(path) if os.path.exists(path) else None
+@@
+ def team_news(team, ttl):
+     def fn():
+         url = f"https://news.google.com/rss/search?q={quote(team + ' football')}+when:3d&hl=fr&gl=FR&ceid=FR:fr"
+         return [{"title": e.title, "link": e.link} for e in feedparser.parse(url).entries[:3]]
+     return cached(f"news:{team}", ttl, fn) or []
+ 
+ 
++# ---------- Météo (optionnelle, OpenWeatherMap) ----------
++def _geocode_city(city, api_key):
++    """Renvoie (lat, lon) ou None."""
++    if not city or not api_key:
++        return None
++    url = "http://api.openweathermap.org/geo/1.0/direct"
++    params = {"q": city + ",FR", "limit": 1, "appid": api_key}
++    r = requests.get(url, params=params, timeout=10)
++    r.raise_for_status()
++    data = r.json()
++    if not data:
++        return None
++    return data[0]["lat"], data[0]["lon"]
++
++
++def fetch_weather(city, api_key, ttl_h, days=3):
++    """Renvoie la prévision daily pour `days` jours (OneCall).
++    Retourne une liste (0..days-1) d'objets :
++      {'date': 'YYYY-MM-DD', 'temp_day': float, 'temp_night': float, 'desc': str, 'pop': float, 'rain': mm}
++    Retourne None si impossible.
++    """
++    if not city or not api_key:
++        return None
++
++    # geocode (cache léger)
++    geo_key = f"geo:{city}"
++    def _geo_fn():
++        return _geocode_city(city, api_key)
++    geo = cached(geo_key, 24, _geo_fn)
++    if not geo:
++        return None
++    lat, lon = geo
++
++    # onecall (daily forecasts)
++    oc_key = f"onecall:{lat:.4f}:{lon:.4f}"
++
++    def _onecall_fn():
++        url = "https://api.openweathermap.org/data/2.5/onecall"
++        params = {"lat": lat, "lon": lon, "exclude": "minutely,hourly,alerts", "units": "metric", "appid": api_key, "lang": "fr"}
++        r = requests.get(url, params=params, timeout=12)
++        r.raise_for_status()
++        return r.json()
++
++    oc = cached(oc_key, ttl_h, _onecall_fn)
++    if not oc:
++        return None
++
++    daily = oc.get("daily", [])
++    if not daily:
++        cur = oc.get("current", {})
++        return [{"date": None, "temp_day": cur.get("temp"), "temp_night": None,
++                 "desc": (cur.get("weather") or [{}])[0].get("description"), "pop": 0.0, "rain": cur.get("rain", 0.0)}]
++
++    out = []
++    from datetime import datetime as _dt
++    for d in daily[:max(1, min(len(daily), days))]:
++        temp_day = d.get("temp", {}).get("day")
++        temp_night = d.get("temp", {}).get("night")
++        weather = (d.get("weather") or [{}])[0]
++        desc = weather.get("description")
++        pop = d.get("pop", 0.0)
++        rain = d.get("rain", 0.0)
++        out.append({"date": _dt.fromtimestamp(d.get("dt", 0), tz=timezone.utc).date().isoformat(),
++                    "temp_day": temp_day, "temp_night": temp_night, "desc": desc, "pop": pop, "rain": rain})
++    return out
++
+*** End Patch~
