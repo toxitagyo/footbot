@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Foot Bot – pronostics</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--tx:#1b1f24;--mut:#667085;--bd:#e2e6ea;--ok:#177a47;--mid:#a85f00;--hi:#b83227;--acc:#2563eb}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1217;--card:#161b22;--tx:#e7eaee;--mut:#8b95a1;--bd:#262e38;--ok:#4cc38a;--mid:#e3a447;--hi:#ef6b5b;--acc:#6ea0ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,sans-serif}
+main{max-width:1000px;margin:auto;padding:16px}h1{margin:.2em 0}small,.mut{color:var(--mut)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}select{padding:8px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--tx)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin:12px 0}
+.top{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--mut)}
+.teams{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;margin:10px 0}
+.teams .t{font-weight:650;font-size:17px}.teams .t:last-child{text-align:right}.vs{color:var(--mut)}
+.form i{display:inline-block;width:18px;height:18px;line-height:18px;text-align:center;border-radius:4px;font-size:11px;font-style:normal;color:#fff;margin-right:2px}
+.fW{background:#1f9d5b}.fD{background:#8a94a0}.fL{background:#d04a3d}
+.probs{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:6px 0}.probs div:nth-child(1){background:var(--acc)}.probs div:nth-child(2){background:#9aa4b0}.probs div:nth-child(3){background:var(--mid)}
+.odds{font-size:13px;margin:6px 0}.odds b{padding:2px 6px;border:1px solid var(--bd);border-radius:6px;margin-right:4px}
+.picks{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:10px}
+.pick{border:1px solid var(--bd);border-left:4px solid;border-radius:8px;padding:8px 10px}
+.pick.s{border-left-color:var(--ok)}.pick.m{border-left-color:var(--mid)}.pick.r{border-left-color:var(--hi)}
+.pick h4{margin:0 0 2px;font-size:12px;text-transform:uppercase;letter-spacing:.04em}.s h4{color:var(--ok)}.m h4{color:var(--mid)}.r h4{color:var(--hi)}
+.badge{font-size:11px;padding:1px 6px;border-radius:10px;background:var(--acc);color:#fff;margin-left:4px}
+details{margin-top:10px;font-size:14px}summary{cursor:pointer;color:var(--acc)}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.cols{grid-template-columns:1fr}}
+ul{margin:4px 0;padding-left:18px}a{color:var(--acc)}
+footer{margin:24px 0;font-size:12px;color:var(--mut)}
+</style></head><body><main>
+<h1>⚽ Foot Bot</h1>
+<small>Mis à jour le {{ updated }} · {{ matches|length }} matchs · cotes : {{ "Winamax FR" if use_odds else "non disponibles" }}</small>
+
+{% set labels = {"safe":"Prudent","medium":"Moyen","risky":"Risqué"} %}
+<p class="mut">Bilan du bot :
+{% for k,v in stats.items() %}{{ labels[k] }} {{ v[1] }}/{{ v[0] }}{% if v[0] %} ({{ (100*v[1]/v[0])|round|int }} %){% endif %}{{ " · " if not loop.last }}{% endfor %}</p>
+
+{% if combo %}<div class="card"><b>Combiné prudent du moment</b> — proba modèle {{ combo.prob|pct }}{% if combo.odd %} · cote ≈ {{ combo.odd }}{% endif %}
+<ul>{% for m in combo.legs %}<li>{{ m.home }} – {{ m.away }} : <b>{{ m.picks.safe.label }}</b> ({{ m.picks.safe.prob|pct }})</li>{% endfor %}</ul></div>{% endif %}
+
+<div class="bar">
+<select id="fl"><option value="">Tous les championnats</option>{% for l in leagues %}<option>{{ l }}</option>{% endfor %}</select>
+<select id="fd"><option value="">Toutes les dates</option>{% for d in dates %}<option>{{ d }}</option>{% endfor %}</select>
+</div>
+
+{% for m in matches %}
+<div class="card" data-l="{{ m.league }}" data-d="{{ m.iso }}">
+ <div class="top">
+  <span>{{ m.league }} ({{ m.country }}) · {{ m.round }}</span>
+  <span>{{ m.date }} · <b>{{ m.time }}</b>
+    {% if m.weather %}
+      · <small class="mut">Météo:
+      {% for w in m.weather %}
+        {% if loop.index0 > 0 %} · {% endif %}
+        {{ w.date[5:] if w.date }} {{ w.temp_day|default("–") }}° {{ w.desc|default("") }}{% if w.rain and w.rain>0 %} (pluie {{ w.rain }}mm){% endif %}
+      {% endfor %}
+      </small>
+    {% endif %}
+  </span>
+ </div>
+ <div class="top"><span>📍 {{ m.venue or "?" }}{% if m.city %}, {{ m.city }}{% endif %}{% if m.referee %} · 🧑‍⚖️ {{ m.referee }}{% endif %}</span>
+  {% if m.lineups %}<span class="badge">compos confirmées</span>{% endif %}</div>
+ <div class="teams">
+  <div class="t">{{ m.home }}<div class="mut" style="font-weight:400;font-size:12px">{% if m.hi %}{{ m.hi.rank }}ᵉ · {{ m.hi.pts }} pts · {% endif %}<span class="form">{% for c in (m.hi.form[-5:] if m.hi else []) %}<i class="f{{ c }}">{{ {'W':'V','D':'N','L':'D'}[c] }}</i>{% endfor %}</span></div></div>
+  <div class="vs">vs</div>
+  <div class="t">{{ m.away }}<div class="mut" style="font-weight:400;font-size:12px">{% if m.ai %}{{ m.ai.rank }}ᵉ · {{ m.ai.pts }} pts · {% endif %}<span class="form">{% for c in (m.ai.form[-5:] if m.ai else []) %}<i class="f{{ c }}">{{ {'W':'V','D':'N','L':'D'}[c] }}</i>{% endfor %}</span></div></div>
+ </div>
+ <div class="probs"><div style="width:{{ m.pr.p1*100 }}%"></div><div style="width:{{ m.pr.px*100 }}%"></div><div style="width:{{ m.pr.p2*100 }}%"></div></div>
+ <div class="mut" style="font-size:13px">Modèle : {{ m.pr.p1|pct }} / {{ m.pr.px|pct }} / {{ m.pr.p2|pct }} · buts attendus {{ "%.1f"|format(m.pr.lh) }}–{{ "%.1f"|format(m.pr.la) }} · +2,5 buts {{ m.pr.o25|pct }} · BTTS {{ m.pr.btts|pct }} · score probable {{ m.pr.score }}</div>
+ {% if m.odds %}<div class="odds">Winamax : <b>1 : {{ m.odds.get("1","–") }}</b><b>N : {{ m.odds.get("X","–") }}</b><b>2 : {{ m.odds.get("2","–") }}</b>{% if m.odds.get("O2.5") %}<b>+2,5 : {{ m.odds["O2.5"] }}</b><b>-2,5 : {{ m.odds.get("U2.5","–") }}</b>{% endif %}</div>{% endif %}
+
+ <div class="picks">
+ {% for k,c in [("s","safe"),("m","medium"),("r","risky")] %}{% set p = m.picks[c] %}
+  <div class="pick {{ k }}"><h4>{{ labels[c] }}{% if c=="safe" and p.solid %} · solide{% endif %}</h4>
+   <b>{{ p.label }}</b>{% if p.value %}<span class="badge">value</span>{% endif %}<br>
+   <small>{{ p.prob|pct }} de réussite{% if p.odd %} · cote {{ "≈ " if p.est }}{{ p.odd }}{% else %} · cote fair {{ (1/p.prob)|round(2) }}{% endif %}</small></div>
+ {% endfor %}
+ </div>
+
+ <details><summary>Compos, absents, actus, H2H</summary>
+  <div class="cols">
+   {% for side,inj,news in [(m.home,m.hinj,m.hnews),(m.away,m.ainj,m.anews)] %}
+   <div><b>{{ side }}</b>
+    {% for lu in m.lineups if lu.team == side %}<div><small>Compo {{ lu.formation }}{% if lu.coach %} · coach {{ lu.coach }}{% endif %}</small><br>{{ lu.xi|join(", ") }}<br><small>Remplaçants : {{ lu.subs|join(", ") }}</small></div>{% else %}<div class="mut">Compo non publiée (≈ H-1)</div>{% endfor %}
+    <div style="margin-top:6px"><small>Absents / incertains</small>{% if inj %}<ul>{% for i in inj %}<li>{{ i }}</li>{% endfor %}</ul>{% else %}<div class="mut">Aucun signalé</div>{% endif %}</div>
+    <small>Actus</small>{% if news %}<ul>{% for n in news %}<li><a href="{{ n.link }}" target="_blank" rel="noopener">{{ n.title }}</a></li>{% endfor %}</ul>{% else %}<div class="mut">–</div>{% endif %}
+   </div>{% endfor %}
+  </div>
+
+  <div style="margin-top:10px">
+   <b>Confrontations récentes</b>
+   {% if m.h2h.matches %}
+     <div class="mut" style="margin:6px 0">Dernières {{ m.h2h.summary.played }} confrontations — {{ m.home }} {{ m.h2h.summary.home_w }} · Nuls {{ m.h2h.summary.draws }} · {{ m.away }} {{ m.h2h.summary.away_w }}</div>
+     <ul>
+      {% for r in m.h2h.matches %}
+       <li>{{ r.date[:10] }} — {{ r.home }} {{ r.hg }} - {{ r.ag }} {{ r.away }}</li>
+      {% endfor %}
+     </ul>
+   {% else %}
+     <div class="mut">Aucune confrontation récente enregistrée</div>
+   {% endif %}
+  </div>
+ </details>
+</div>
+{% else %}<p>Aucun match dans la fenêtre choisie.</p>{% endfor %}
+
+<footer>Les pronostics sont des estimations statistiques, pas des certitudes : aucun modèle ne bat durablement les bookmakers à coup sûr. Les paris comportent des risques (perte d'argent, dépendance). Joueurs Info Service : 09 74 75 13 13.</footer>
+</main>
+<script>
+const fl=document.getElementById('fl'),fd=document.getElementById('fd');
+function f(){document.querySelectorAll('.card[data-l]').forEach(c=>{c.style.display=((!fl.value||c.dataset.l===fl.value)&&(!fd.value||c.dataset.d===fd.value))?'':'none'})}
+fl.onchange=fd.onchange=f;
+</script></body></html>
