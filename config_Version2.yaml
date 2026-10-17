@@ -1,6 +1,6 @@
 # Clés (ou variables d'environnement API_FOOTBALL_KEY / ODDS_API_KEY)
-api_football_key: "TA_CLE_API_FOOTBALL"
-odds_api_key: "TA_CLE_ODDS_API"
+api_football_key: "f25ed41a7fdfad0270ccf8503ad8af7b"
+odds_api_key: "2262be77f1b4d6682de4a1a9a394867c"
 
 timezone: Europe/Paris
 days_ahead: 3
